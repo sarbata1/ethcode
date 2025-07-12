@@ -92,10 +92,15 @@ const getCompiledJsonObject = (_jsonPayload: any): CompiledJSONOutput => {
       output.contractType = 2
       output.remixOutput = data
       logger.log('Loaded Remix compiled json output.')
+    } else if (data.abi !== undefined && data.evm !== undefined) {
+      // Foundry format
+      output.contractType = 3
+      output.foundryOutput = data
+      logger.log('Loaded Foundry compiled json output.')
     }
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.log(e)
+    logger.error(e)
   }
 
   return output
@@ -110,12 +115,30 @@ const loadAllCompiledJsonOutputs: any = async (path_: string) => {
 
   if (await isFoundryProject()) {
     const foundryConfigFile = await workspace.findFiles('**/foundry.toml', '**/{node_modules,lib}/**')
-    const file = await workspace.fs.readFile(foundryConfigFile[0])
-    const foundryConfig = toml.parse(file.toString())
-    allFiles = getDirectoriesRecursive(
-      path.join(path_, foundryConfig.profile.default.out), // for USDC project output dir is artifacts/foundry
-      0
-    )
+    if (foundryConfigFile.length > 0) {
+      const file = await workspace.fs.readFile(foundryConfigFile[0])
+      const foundryConfig = toml.parse(file.toString())
+      
+      // Handle different Foundry output directory configurations
+      let outDir = 'out'
+      if (foundryConfig.profile && foundryConfig.profile.default && foundryConfig.profile.default.out) {
+        outDir = foundryConfig.profile.default.out
+      } else if (foundryConfig.out) {
+        outDir = foundryConfig.out
+      }
+      
+      logger.log(`Foundry output directory: ${outDir}`)
+      allFiles = getDirectoriesRecursive(
+        path.join(path_, outDir),
+        0
+      )
+    } else {
+      // Fallback to default Foundry output directory
+      allFiles = getDirectoriesRecursive(
+        path.join(path_, 'out'),
+        0
+      )
+    }
   } else if (isHardhatProject(path_)) {
     allFiles = getDirectoriesRecursive(
       path.join(path_, 'artifacts', 'contracts'),
