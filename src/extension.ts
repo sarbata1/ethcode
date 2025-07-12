@@ -21,6 +21,7 @@ import {
   parseCompiledJSONPayload,
   selectContract
 } from './utils'
+import { isFoundryProject } from './utils/functions'
 import { provider, status, wallet, contract } from './api'
 import { events } from './api/events'
 import { event } from './api/api'
@@ -154,6 +155,21 @@ export async function activate (context: ExtensionContext): Promise<API | undefi
     // Activate
     commands.registerCommand('ethcode.activate', async () => {
       logger.success('Welcome to Ethcode!')
+    }),
+
+    // Load Foundry contracts
+    commands.registerCommand('ethcode.foundry.load', async () => {
+      try {
+        const isFoundry = await isFoundryProject()
+        if (isFoundry) {
+          await parseBatchCompiledJSON(context)
+          logger.success('Foundry contracts loaded successfully!')
+        } else {
+          logger.log('This is not a Foundry project. Please run this command in a Foundry project directory.')
+        }
+      } catch (error) {
+        logger.error(`Error loading Foundry contracts: ${error}`)
+      }
     })
   ]
 
@@ -236,24 +252,24 @@ export async function activate (context: ExtensionContext): Promise<API | undefi
     return
   }
   const watcher = workspace.createFileSystemWatcher(
-    new RelativePattern(path_[0].uri.fsPath, '{artifacts, build, out, cache}/**/*.json')
+    new RelativePattern(path_[0].uri.fsPath, '{artifacts, build, out, cache, out-*/**/*.json')
   )
 
-  watcher.onDidCreate(async (uri) => {
+  watcher.onDidCreate(async (uri: any) => {
     await parseBatchCompiledJSON(context)
     const contracts = context.workspaceState.get('contracts') as string[]
     if (contracts === undefined || contracts.length === 0) return []
     event.contracts.fire(Object.keys(contracts))
   })
 
-  watcher.onDidChange(async (uri) => {
+  watcher.onDidChange(async (uri: any) => {
     await parseBatchCompiledJSON(context)
     const contracts = context.workspaceState.get('contracts') as string[]
     if (contracts === undefined || contracts.length === 0) return []
     event.contracts.fire(Object.keys(contracts))
   })
 
-  watcher.onDidDelete(async (uri) => {
+  watcher.onDidDelete(async (uri: any) => {
     const contracts = context.workspaceState.get('contracts') as string[]
     if (contracts === undefined || contracts.length === 0) return []
     event.contracts.fire(Object.keys(contracts))
