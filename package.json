@@ -39,7 +39,8 @@
     "onCommand:ethcode.contract.call",
     "onCommand:ethcode.transaction.gas.set",
     "onCommand:ethcode.transaction.gas.prices",
-    "onCommand:ethcode.rental.create"
+    "onCommand:ethcode.rental.create",
+    "onCommand:ethcode.foundry.load"
   ],
   "main": "./extension/build/extension.js",
   "extensionDependencies": [
@@ -157,6 +158,10 @@
       {
         "command": "ethcode.createERC4907Contract",
         "title": "Ethcode: Create ERC4907 Contract"
+      },
+      {
+        "command": "ethcode.foundry.load",
+        "title": "Ethcode: Load Foundry Contracts"
       }
     ],
     "keybindings": [
