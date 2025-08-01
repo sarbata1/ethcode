@@ -18,6 +18,8 @@ import {
 import {
   createERC4907Contract,
   parseBatchCompiledJSON,
+  parseFoundryCompiledJSON,
+  parseHardhatCompiledJSON,
   parseCompiledJSONPayload,
   selectContract
 } from './utils'
@@ -160,15 +162,18 @@ export async function activate (context: ExtensionContext): Promise<API | undefi
     // Load Foundry contracts
     commands.registerCommand('ethcode.foundry.load', async () => {
       try {
-        const isFoundry = await isFoundryProject()
-        if (isFoundry) {
-          await parseBatchCompiledJSON(context)
-          logger.success('Foundry contracts loaded successfully!')
-        } else {
-          logger.log('This is not a Foundry project. Please run this command in a Foundry project directory.')
-        }
+        await parseFoundryCompiledJSON(context)
       } catch (error) {
         logger.error(`Error loading Foundry contracts: ${error}`)
+      }
+    }),
+
+    // Load Hardhat contracts
+    commands.registerCommand('ethcode.hardhat.load', async () => {
+      try {
+        await parseHardhatCompiledJSON(context)
+      } catch (error) {
+        logger.error(`Error loading Hardhat contracts: ${error}`)
       }
     })
   ]
