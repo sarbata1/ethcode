@@ -40,7 +40,8 @@
     "onCommand:ethcode.transaction.gas.set",
     "onCommand:ethcode.transaction.gas.prices",
     "onCommand:ethcode.rental.create",
-    "onCommand:ethcode.foundry.load"
+    "onCommand:ethcode.foundry.load",
+    "onCommand:ethcode.hardhat.load"
   ],
   "main": "./extension/build/extension.js",
   "extensionDependencies": [
@@ -162,6 +163,10 @@
       {
         "command": "ethcode.foundry.load",
         "title": "Ethcode: Load Foundry Contracts"
+      },
+      {
+        "command": "ethcode.hardhat.load",
+        "title": "Ethcode: Load Hardhat Contracts"
       }
     ],
     "keybindings": [
