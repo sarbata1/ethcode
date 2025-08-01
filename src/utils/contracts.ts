@@ -19,6 +19,299 @@ import {
 } from './functions'
 import { ERC4907ContractUrls } from '../contracts/ERC4907/ERC4907'
 
+/**
+ * Parse Foundry compiled JSON contracts specifically
+ * This function is dedicated to loading Foundry compiled contracts with proper error handling
+ */
+const parseFoundryCompiledJSON = async (context: ExtensionContext): Promise<void> => {
+  if (workspace.workspaceFolders === undefined) {
+    logger.error(new Error('Please open your solidity project to vscode'))
+    return
+  }
+
+  logger.log('Loading compiled contracts...')
+  
+  try {
+    // Check if this is a Foundry project
+    const isFoundry = await isFoundryProject()
+    if (!isFoundry) {
+      logger.error(new Error('This is not a Foundry project. Please run this command in a Foundry project directory or ensure foundry.toml exists.'))
+      return
+    }
+
+    // Find foundry.toml configuration file
+    const foundryConfigFiles = await workspace.findFiles('**/foundry.toml', '**/{node_modules,lib}/**')
+    if (foundryConfigFiles.length === 0) {
+      logger.error(new Error('Foundry configuration file (foundry.toml) not found. Please ensure this is a valid Foundry project.'))
+      return
+    }
+
+    // Parse foundry.toml to get output directory
+    let outDir = 'out' // default Foundry output directory
+    try {
+      const configFile = await workspace.fs.readFile(foundryConfigFiles[0])
+      const foundryConfig = toml.parse(configFile.toString())
+      
+      // Handle different Foundry output directory configurations
+      if (foundryConfig.profile && foundryConfig.profile.default && foundryConfig.profile.default.out) {
+        outDir = foundryConfig.profile.default.out
+      } else if (foundryConfig.out) {
+        outDir = foundryConfig.out
+      }
+      
+      logger.log(`Foundry output directory: ${outDir}`)
+    } catch (configError) {
+      logger.error(new Error(`Failed to parse foundry.toml configuration: ${configError}`))
+      return
+    }
+
+    // Check if output directory exists
+    const path_ = workspace.workspaceFolders[0].uri.fsPath
+    const outPath = path.join(path_, outDir)
+    
+    if (!fs.existsSync(outPath)) {
+      logger.error(new Error(`Foundry output directory '${outDir}' not found. Please compile your contracts first using 'forge build'`))
+      return
+    }
+
+    // Initialize contracts storage
+    void context.workspaceState.update('contracts', {})
+
+    // Load all JSON files from the output directory
+    const jsonFiles = getDirectoriesRecursive(outPath, 0)
+    logger.log(`Found ${jsonFiles.length} total JSON files in ${outDir} directory`)
+    
+    const contractFiles = jsonFiles.filter((filePath: string) => {
+      const fileName = path.parse(filePath).base
+      const nameWithoutExt = fileName.substring(0, fileName.length - 5)
+      
+      // Skip files with dots in name (library files)
+      if (nameWithoutExt.includes('.')) {
+        logger.log(`Skipping ${fileName}: Library file (contains dots)`)
+        return false
+      }
+      
+      // Skip files that are likely not contracts (build info, cache, etc.)
+      if (nameWithoutExt.length === 16 && /^[a-f0-9]{16}$/.test(nameWithoutExt)) {
+        // This looks like a hash/ID file, likely not a contract
+        logger.log(`Skipping ${fileName}: Hash/ID file (16-character hex)`)
+        return false
+      }
+      
+      // Skip common non-contract files
+      const skipPatterns = ['build-info', 'cache', 'metadata', 'storage-layout']
+      if (skipPatterns.some(pattern => fileName.toLowerCase().includes(pattern))) {
+        logger.log(`Skipping ${fileName}: Non-contract file (contains ${skipPatterns.find(p => fileName.toLowerCase().includes(p))})`)
+        return false
+      }
+      
+      return true
+    })
+
+    if (contractFiles.length === 0) {
+      logger.error(new Error(`No compiled contract files found in '${outDir}' directory. Please compile your contracts using 'forge build'`))
+      return
+    }
+
+    logger.log(`Found ${contractFiles.length} compiled contract files (filtered from ${jsonFiles.length} total JSON files)`)
+
+    // Parse each contract file
+    let loadedContracts = 0
+    for (const filePath of contractFiles) {
+      try {
+        const fileName = path.parse(filePath).base
+        const contractName = fileName.substring(0, fileName.length - 5)
+
+        logger.log(`Parsing Foundry contract: ${contractName}`)
+
+        const fileData = fs.readFileSync(filePath, 'utf8')
+        const jsonData = JSON.parse(fileData)
+
+        // Validate Foundry format - check for both possible structures
+        if (!jsonData.abi) {
+          logger.log(`Skipping ${contractName}: Missing ABI field`)
+          continue
+        }
+        
+        // Check if this is a Foundry format (has evm field) or Hardhat format (has bytecode field)
+        if (!jsonData.evm && !jsonData.bytecode) {
+          logger.log(`Skipping ${contractName}: Not a valid compiled contract format (missing evm or bytecode)`)
+          continue
+        }
+
+        // Determine contract type based on format
+        let contractType: number
+        let outputData: any
+        
+        if (jsonData.evm) {
+          // Foundry format
+          contractType = 3
+          outputData = jsonData
+        } else if (jsonData.bytecode) {
+          // Hardhat format - convert to Foundry format for compatibility
+          contractType = 3
+          outputData = {
+            abi: jsonData.abi,
+            bytecode: {
+              object: jsonData.bytecode,
+              sourceMap: '',
+              linkReferences: {}
+            },
+            deployedBytecode: {
+              object: jsonData.deployedBytecode || jsonData.bytecode,
+              sourceMap: '',
+              linkReferences: {}
+            },
+            evm: {
+              bytecode: {
+                object: jsonData.bytecode,
+                sourceMap: '',
+                linkReferences: {}
+              },
+              deployedBytecode: {
+                object: jsonData.deployedBytecode || jsonData.bytecode,
+                sourceMap: '',
+                linkReferences: {}
+              }
+            }
+          }
+        } else {
+          logger.log(`Skipping ${contractName}: Unknown contract format`)
+          continue
+        }
+
+        const output: CompiledJSONOutput = {
+          contractType: contractType,
+          foundryOutput: outputData,
+          path: path.dirname(filePath),
+          name: contractName
+        }
+
+        // Store contract in workspace state
+        let contracts: any = context.workspaceState.get('contracts')
+        if (!contracts) contracts = {}
+        
+        contracts[contractName] = output
+        void context.workspaceState.update('contracts', contracts)
+
+        const formatType = jsonData.evm ? 'Foundry' : 'Hardhat'
+        logger.success(`Successfully loaded ${formatType} contract: ${contractName}`)
+        loadedContracts++
+
+      } catch (parseError) {
+        logger.error(new Error(`Failed to parse contract file ${filePath}: ${parseError}`))
+      }
+    }
+
+    if (loadedContracts === 0) {
+      logger.error(new Error('No valid compiled contracts were loaded. Please check your compilation output.'))
+    } else {
+      logger.success(`Successfully loaded ${loadedContracts} compiled contracts`)
+    }
+
+  } catch (error) {
+    logger.error(new Error(`Error loading Foundry contracts: ${error}`))
+  }
+}
+
+/**
+ * Parse Hardhat compiled JSON contracts specifically
+ * This function is dedicated to loading Hardhat compiled contracts with proper error handling
+ */
+const parseHardhatCompiledJSON = async (context: ExtensionContext): Promise<void> => {
+  if (workspace.workspaceFolders === undefined) {
+    logger.error(new Error('Please open your solidity project to vscode'))
+    return
+  }
+
+  logger.log('Loading Hardhat compiled contracts...')
+  
+  try {
+    const path_ = workspace.workspaceFolders[0].uri.fsPath
+    
+    // Check if this is a Hardhat project
+    if (!isHardhatProject(path_)) {
+      logger.error(new Error('This is not a Hardhat project. Please run this command in a Hardhat project directory.'))
+      return
+    }
+
+    // Check if artifacts directory exists
+    const artifactsPath = path.join(path_, 'artifacts', 'contracts')
+    if (!fs.existsSync(artifactsPath)) {
+      logger.error(new Error("Hardhat artifacts directory not found. Please compile your contracts first using 'npx hardhat compile'"))
+      return
+    }
+
+    // Initialize contracts storage
+    void context.workspaceState.update('contracts', {})
+
+    // Load all JSON files from the artifacts directory
+    const jsonFiles = getDirectoriesRecursive(artifactsPath, 0)
+    const contractFiles = jsonFiles.filter((filePath: string) => {
+      const fileName = path.parse(filePath).base
+      const nameWithoutExt = fileName.substring(0, fileName.length - 5)
+      // Filter out files with dots in name (avoiding library files)
+      return !nameWithoutExt.includes('.')
+    })
+
+    if (contractFiles.length === 0) {
+      logger.error(new Error("No compiled contract files found in 'artifacts/contracts' directory. Please compile your contracts using 'npx hardhat compile'"))
+      return
+    }
+
+    logger.log(`Found ${contractFiles.length} compiled contract files`)
+
+    // Parse each contract file
+    let loadedContracts = 0
+    for (const filePath of contractFiles) {
+      try {
+        const fileName = path.parse(filePath).base
+        const contractName = fileName.substring(0, fileName.length - 5)
+
+        logger.log(`Parsing Hardhat contract: ${contractName}`)
+
+        const fileData = fs.readFileSync(filePath, 'utf8')
+        const jsonData = JSON.parse(fileData)
+
+        // Validate Hardhat format
+        if (!jsonData.bytecode) {
+          logger.log(`Skipping ${contractName}: Not a valid Hardhat compiled contract format`)
+          continue
+        }
+
+        const output: CompiledJSONOutput = {
+          contractType: 1, // Hardhat format
+          hardhatOutput: jsonData,
+          path: path.dirname(filePath),
+          name: contractName
+        }
+
+        // Store contract in workspace state
+        let contracts: any = context.workspaceState.get('contracts')
+        if (!contracts) contracts = {}
+        
+        contracts[contractName] = output
+        void context.workspaceState.update('contracts', contracts)
+
+        logger.success(`Successfully loaded Hardhat contract: ${contractName}`)
+        loadedContracts++
+
+      } catch (parseError) {
+        logger.error(new Error(`Failed to parse contract file ${filePath}: ${parseError}`))
+      }
+    }
+
+    if (loadedContracts === 0) {
+      logger.error(new Error('No valid Hardhat contracts were loaded. Please check your compilation output.'))
+    } else {
+      logger.success(`Successfully loaded ${loadedContracts} Hardhat contracts`)
+    }
+
+  } catch (error) {
+    logger.error(new Error(`Error loading Hardhat contracts: ${error}`))
+  }
+}
+
 const parseBatchCompiledJSON = async (context: ExtensionContext): Promise<void> => {
   if (workspace.workspaceFolders === undefined) {
     logger.error(new Error('Please open your solidity project to vscode'))
@@ -236,6 +529,8 @@ const createERC4907Contract: any = async (context: ExtensionContext) => {
 
 export {
   parseBatchCompiledJSON,
+  parseFoundryCompiledJSON,
+  parseHardhatCompiledJSON,
   parseCompiledJSONPayload,
   selectContract,
   createERC4907Contract
