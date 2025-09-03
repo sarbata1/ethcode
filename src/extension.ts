@@ -21,13 +21,15 @@ import {
   parseFoundryCompiledJSON,
   parseHardhatCompiledJSON,
   parseCompiledJSONPayload,
-  selectContract
+  selectContract,
+  parseFoundryConfig
 } from './utils'
-import { isFoundryProject } from './utils/functions'
+import { isFoundryProject, isHardhatProject } from './utils/functions'
 import { provider, status, wallet, contract } from './api'
 import { events } from './api/events'
 import { event } from './api/api'
 import { type API } from './types'
+import * as toml from 'toml'
 
 export async function activate (context: ExtensionContext): Promise<API | undefined> {
   const disposables = [
@@ -256,9 +258,45 @@ export async function activate (context: ExtensionContext): Promise<API | undefi
     await window.showErrorMessage('No folder selected please open one.')
     return
   }
-  const watcher = workspace.createFileSystemWatcher(
-    new RelativePattern(path_[0].uri.fsPath, '{artifacts, build, out, cache, out-*/**/*.json')
-  )
+
+  // Create dynamic file watcher based on project type
+  const createDynamicWatcher = async () => {
+    const watchPatterns: string[] = []
+    
+    try {
+      // Check for Foundry project using centralized parser
+      const foundryConfig = await parseFoundryConfig()
+      if (foundryConfig) {
+        const { outDir } = foundryConfig
+        watchPatterns.push(`${outDir}/**/*.json`)
+        logger.log(`Foundry project detected, watching: ${outDir}/**/*.json`)
+      }
+      
+      // Check for Hardhat project
+      if (isHardhatProject(path_[0].uri.fsPath)) {
+        watchPatterns.push('artifacts/**/*.json')
+        logger.log('Hardhat project detected, watching: artifacts/**/*.json')
+      }
+      
+      // Fallback patterns for other frameworks
+      if (watchPatterns.length === 0) {
+        watchPatterns.push('{artifacts, build, out, cache, out-*/**/*.json}')
+        logger.log('No specific framework detected, using fallback patterns')
+      }
+      
+    } catch (error) {
+      logger.error(`Error setting up file watcher: ${error}`)
+      // Fallback to original pattern
+      watchPatterns.push('{artifacts, build, out, cache, out-*/**/*.json}')
+    }
+    
+    // Create watcher with dynamic patterns
+    return workspace.createFileSystemWatcher(
+      new RelativePattern(path_[0].uri.fsPath, watchPatterns.join(','))
+    )
+  }
+
+  const watcher = await createDynamicWatcher()
 
   watcher.onDidCreate(async (uri: any) => {
     await parseBatchCompiledJSON(context)
