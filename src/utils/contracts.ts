@@ -4,6 +4,88 @@ import * as fs from 'fs'
 import * as toml from 'toml'
 import { logger } from '../lib'
 import { type CompiledJSONOutput, type IFunctionQP } from '../types'
+
+/**
+ * Centralized Foundry configuration parser
+ * Reads foundry.toml from the current workspace and extracts configuration
+ */
+const parseFoundryConfig = async (): Promise<{ outDir: string; config: any } | null> => {
+  try {
+    if (!workspace.workspaceFolders || workspace.workspaceFolders.length === 0) {
+      return null
+    }
+
+    const workspacePath = workspace.workspaceFolders[0].uri.fsPath
+    const foundryConfigPath = path.join(workspacePath, 'foundry.toml')
+    
+    if (!fs.existsSync(foundryConfigPath)) {
+      return null
+    }
+
+    const configFile = fs.readFileSync(foundryConfigPath, 'utf8')
+    
+    // Try to parse with the TOML library first
+    let foundryConfig: any
+    try {
+      foundryConfig = toml.parse(configFile)
+    } catch (tomlError) {
+      // If TOML parsing fails, try a simple regex-based approach for just the output directory
+      logger.log(`TOML parsing failed, using fallback parser: ${tomlError}`)
+      foundryConfig = parseFoundryConfigFallback(configFile)
+    }
+    
+    // Extract output directory with proper precedence
+    let outDir = 'out' // default Foundry output directory
+    
+    if (foundryConfig.profile && foundryConfig.profile.default && foundryConfig.profile.default.out) {
+      outDir = foundryConfig.profile.default.out
+    } else if (foundryConfig.out) {
+      outDir = foundryConfig.out
+    }
+    
+    logger.log(`Foundry configuration loaded: output directory = ${outDir}`)
+    
+    return {
+      outDir,
+      config: foundryConfig
+    }
+  } catch (error) {
+    logger.error(`Error parsing foundry.toml: ${error}`)
+    return null
+  }
+}
+
+/**
+ * Fallback parser for foundry.toml when TOML library fails
+ * Uses regex to extract just the output directory
+ */
+const parseFoundryConfigFallback = (configContent: string): any => {
+  const config: any = {}
+  
+  // Look for [profile.default] section
+  const profileDefaultMatch = configContent.match(/\[profile\.default\][\s\S]*?(?=\[|$)/)
+  if (profileDefaultMatch) {
+    const profileSection = profileDefaultMatch[0]
+    
+    // Extract out directory from profile.default section
+    const outMatch = profileSection.match(/out\s*=\s*['"]([^'"]+)['"]/)
+    if (outMatch) {
+      config.profile = {
+        default: {
+          out: outMatch[1]
+        }
+      }
+    }
+  }
+  
+  // Also check for root-level out setting
+  const rootOutMatch = configContent.match(/^out\s*=\s*['"]([^'"]+)['"]/m)
+  if (rootOutMatch && !config.profile) {
+    config.out = rootOutMatch[1]
+  }
+  
+  return config
+}
 import {
   createERC4907ContractFile,
   createERC4907ContractInterface,
@@ -39,31 +121,15 @@ const parseFoundryCompiledJSON = async (context: ExtensionContext): Promise<void
       return
     }
 
-    // Find foundry.toml configuration file
-    const foundryConfigFiles = await workspace.findFiles('**/foundry.toml', '**/{node_modules,lib}/**')
-    if (foundryConfigFiles.length === 0) {
+    // Parse foundry.toml configuration
+    const foundryConfig = await parseFoundryConfig()
+    if (!foundryConfig) {
       logger.error(new Error('Foundry configuration file (foundry.toml) not found. Please ensure this is a valid Foundry project.'))
       return
     }
 
-    // Parse foundry.toml to get output directory
-    let outDir = 'out' // default Foundry output directory
-    try {
-      const configFile = await workspace.fs.readFile(foundryConfigFiles[0])
-      const foundryConfig = toml.parse(configFile.toString())
-      
-      // Handle different Foundry output directory configurations
-      if (foundryConfig.profile && foundryConfig.profile.default && foundryConfig.profile.default.out) {
-        outDir = foundryConfig.profile.default.out
-      } else if (foundryConfig.out) {
-        outDir = foundryConfig.out
-      }
-      
-      logger.log(`Foundry output directory: ${outDir}`)
-    } catch (configError) {
-      logger.error(new Error(`Failed to parse foundry.toml configuration: ${configError}`))
-      return
-    }
+    const { outDir } = foundryConfig
+    logger.log(`Foundry output directory: ${outDir}`)
 
     // Check if output directory exists
     const path_ = workspace.workspaceFolders[0].uri.fsPath
@@ -407,19 +473,9 @@ const loadAllCompiledJsonOutputs: any = async (path_: string) => {
   let allFiles
 
   if (await isFoundryProject()) {
-    const foundryConfigFile = await workspace.findFiles('**/foundry.toml', '**/{node_modules,lib}/**')
-    if (foundryConfigFile.length > 0) {
-      const file = await workspace.fs.readFile(foundryConfigFile[0])
-      const foundryConfig = toml.parse(file.toString())
-      
-      // Handle different Foundry output directory configurations
-      let outDir = 'out'
-      if (foundryConfig.profile && foundryConfig.profile.default && foundryConfig.profile.default.out) {
-        outDir = foundryConfig.profile.default.out
-      } else if (foundryConfig.out) {
-        outDir = foundryConfig.out
-      }
-      
+    const foundryConfig = await parseFoundryConfig()
+    if (foundryConfig) {
+      const { outDir } = foundryConfig
       logger.log(`Foundry output directory: ${outDir}`)
       allFiles = getDirectoriesRecursive(
         path.join(path_, outDir),
@@ -427,6 +483,7 @@ const loadAllCompiledJsonOutputs: any = async (path_: string) => {
       )
     } else {
       // Fallback to default Foundry output directory
+      logger.log('Foundry project detected but no foundry.toml found, using default output directory')
       allFiles = getDirectoriesRecursive(
         path.join(path_, 'out'),
         0
@@ -533,5 +590,6 @@ export {
   parseHardhatCompiledJSON,
   parseCompiledJSONPayload,
   selectContract,
-  createERC4907Contract
+  createERC4907Contract,
+  parseFoundryConfig
 }
